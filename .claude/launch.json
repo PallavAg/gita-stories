@@ -1,0 +1,14 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "gita-stories",
+      "runtimeExecutable": "/bin/sh",
+      "runtimeArgs": [
+        "-c",
+        "cd website && exec npx next dev --port 3040"
+      ],
+      "port": 3040
+    }
+  ]
+}

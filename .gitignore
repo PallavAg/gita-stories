@@ -1,0 +1,17 @@
+*.mp3
+node_modules/
+.next/
+npm-debug.log*
+.env
+*.mp4
+.DS_Store
+.download-*/
+# app caches and run history (rebuilt automatically)
+stories/media-index.json
+stories/jobs.json
+stories/**/*.tmp
+.env*.local
+# your saved stories, edits and transcripts stay on this machine (not in the public repo)
+stories/
+*.tsbuildinfo
+next-env.d.ts
