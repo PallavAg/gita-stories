@@ -31,3 +31,7 @@ Stories, your edits and transcripts are saved as JSON in `stories/` next to the 
 ## Updating
 
 When there's new code on GitHub, an **Update** button appears in the top bar. It pulls the latest version and installs any new packages; if it says a restart is needed, stop the server and run `npm run dev` again.
+
+## Sharing as a zip
+
+Before zipping the folder, you can delete `website/node_modules` and `website/.next` to save space; both come back with `npm install` and `npm run dev`.
