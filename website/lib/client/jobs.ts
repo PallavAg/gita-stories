@@ -20,7 +20,7 @@ async function poll() {
     const next = await api<JobsState>("/api/jobs");
     state = { ...next, error: null };
   } catch (err) {
-    state = state ? { ...state, error: (err as Error).message } : { jobs: [], concurrency: 2, paused: false, totals: { stt: 0, llm: 0, runs: 0 }, error: (err as Error).message };
+    state = state ? { ...state, error: (err as Error).message } : { jobs: [], concurrency: 8, paused: false, totals: { stt: 0, llm: 0, runs: 0 }, error: (err as Error).message };
   }
   emit();
   if (subscribers > 0) timer = setTimeout(poll, state.jobs.some(active) ? 1000 : 5000);

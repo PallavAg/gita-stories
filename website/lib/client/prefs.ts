@@ -10,6 +10,7 @@ const KEY = "gita-stories.ui.v1";
 export type Prefs = {
   libraryCollection: string;
   libraryStatus: string;
+  librarySort: "oldest" | "newest";
   librarySearch: string;
   mediaMode: "audio" | "video";
   playbackRate: number;
@@ -22,6 +23,7 @@ export type Prefs = {
 const DEFAULTS: Prefs = {
   libraryCollection: "sunday",
   libraryStatus: "all",
+  librarySort: "oldest",
   librarySearch: "",
   mediaMode: "audio",
   playbackRate: 1,
@@ -62,4 +64,13 @@ export function usePref<K extends keyof Prefs>(key: K): [Prefs[K], (v: Prefs[K])
   );
   const set = useCallback((v: Prefs[K]) => write({ ...read(), [key]: v }), [key]);
   return [value, set];
+}
+
+/** forget all view preferences (tabs, filters, playback choices) */
+export function resetPrefs() {
+  try {
+    localStorage.removeItem(KEY);
+  } catch {}
+  cache = { ...DEFAULTS };
+  listeners.forEach((l) => l());
 }

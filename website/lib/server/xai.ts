@@ -1,6 +1,7 @@
 import "server-only";
 import { Agent, fetch, FormData } from "undici";
 import { LLM_MODEL, STT_MODEL, XAI_API_KEY } from "./config";
+import { getSettings } from "./settings";
 
 // Transcribing a 2-hour class or reasoning over its transcript can take several minutes before the
 // first response byte, longer than Node's built-in fetch waits (5 min), so use our own agent.
@@ -74,27 +75,61 @@ export async function withRetry<T>(fn: () => Promise<T>, signal: AbortSignal, on
 export type SttWord = { text: string; start: number; end: number; speaker?: number };
 export type SttResult = { text: string; language: string; duration: number; words: SttWord[] };
 
-const KEYTERMS = ["shloka", "Gita", "Krishna", "Arjuna", "Bhagavad Gita", "satsang", "Baba"];
+export const KEYTERMS = ["shloka", "Gita", "Krishna", "Arjuna", "Bhagavad Gita", "satsang", "Baba"];
+/** xAI's speech-detection threshold (its default); recorded in each transcript */
+export const VAD_THRESHOLD = 0.5;
+
+// xAI speech-to-text allows 10 requests a second and 100 at once on the starting tier. Every running class sends
+// its own requests (plus up to 6 gap clips at a time), so all of them share these slots to stay under the limits.
+const STT_PER_SECOND = 8;
+const STT_AT_ONCE = 60;
+const sttStarts: number[] = [];
+let sttActive = 0;
+
+async function sttSlot(signal: AbortSignal): Promise<() => void> {
+  for (;;) {
+    if (signal.aborted) throw signal.reason;
+    const now = Date.now();
+    while (sttStarts.length && now - sttStarts[0] >= 1000) sttStarts.shift();
+    if (sttActive < STT_AT_ONCE && sttStarts.length < STT_PER_SECOND) {
+      sttStarts.push(now);
+      sttActive++;
+      return () => void sttActive--;
+    }
+    await new Promise((r) => setTimeout(r, sttStarts.length >= STT_PER_SECOND ? 1000 - (now - sttStarts[0]) + 5 : 100));
+  }
+}
 
 export async function speechToText(audio: Buffer, name: string, signal: AbortSignal): Promise<SttResult> {
   const form = new FormData();
   // option fields must come before the file field
   form.append("model", STT_MODEL);
   form.append("diarize", "true");
+  form.append("vad_threshold", String(VAD_THRESHOLD));
+  form.append("filler_words", String((await getSettings()).fillerWords));
   for (const t of KEYTERMS) form.append("keyterm", t);
   form.append("file", new Blob([new Uint8Array(audio)], { type: "audio/mpeg" }), name);
-  const res = await call("https://api.x.ai/v1/stt", { body: form }, signal);
-  if (!Array.isArray(res.words)) throw new XaiError("xAI transcription response had no words", null, true);
-  return res as SttResult;
+  const release = await sttSlot(signal);
+  let res;
+  try {
+    res = await call("https://api.x.ai/v1/stt", { body: form }, signal);
+  } finally {
+    release();
+  }
+  if (typeof res !== "object" || res === null) throw new XaiError("xAI transcription response wasn't an object", null, true);
+  // silence (common for short gap clips) comes back without a words list: that's an empty result, not an error
+  return { text: res.text ?? "", language: res.language ?? "", duration: res.duration ?? 0, words: Array.isArray(res.words) ? res.words : [] } as SttResult;
 }
 
 export async function chatJson(system: string, user: string, schema: object, signal: AbortSignal) {
+  const { reasoningEffort } = await getSettings();
   const res = await call(
     "https://api.x.ai/v1/chat/completions",
     {
       json: true,
       body: JSON.stringify({
         model: LLM_MODEL,
+        reasoning_effort: reasoningEffort,
         messages: [
           { role: "system", content: system },
           { role: "user", content: user },
@@ -114,5 +149,5 @@ export async function chatJson(system: string, user: string, schema: object, sig
   }
   // cost_in_usd_ticks is in units of 1e-10 USD
   const costUsd = typeof res.usage?.cost_in_usd_ticks === "number" ? res.usage.cost_in_usd_ticks / 1e10 : 0;
-  return { parsed, costUsd, usage: res.usage };
+  return { parsed, costUsd, usage: res.usage, reasoningEffort };
 }

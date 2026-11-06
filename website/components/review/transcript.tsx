@@ -25,7 +25,7 @@ export function textBetween(words: Word[], start: number, end: number) {
  * Clicking a word jumps there; the word being spoken is highlighted.
  */
 export function StoryTranscript({ words, start, end, time, rohit, onSeek }: { words: Word[]; start: number; end: number; time: number; rohit: number[]; onSeek: (t: number) => void }) {
-  const CONTEXT = 10;
+  const CONTEXT = 30; // seconds of faded transcript shown before and after the story
   const slice = useMemo(() => {
     const from = Math.max(0, wordAt(words, start - CONTEXT));
     const to = wordAt(words, end + CONTEXT);

@@ -1,6 +1,7 @@
 import "server-only";
 import { randomUUID } from "node:crypto";
 import type { ClassInfo, Job, JobMode, JobsState, JobStep } from "@/lib/types";
+import { fullLabel } from "@/lib/names";
 import { getClassInfo } from "./library";
 import { findStories, readTranscript, saveStories, transcribe } from "./pipeline";
 import { dataPath, readJson, writeJson } from "./store";
@@ -9,6 +10,10 @@ import { dataPath, readJson, writeJson } from "./store";
 // running or queued when the server stopped come back as "interrupted" and can be retried.
 
 const FILE = dataPath("jobs.json");
+// xAI's limits are high (Grok: 7,200 requests and 50M tokens a minute on the starting tier); transcription is the
+// tighter one and is throttled separately in xai.ts, so many classes can run at once.
+export const DEFAULT_CONCURRENCY = 8;
+export const MAX_CONCURRENCY = 20;
 const MAX_HISTORY = 500;
 
 type Runner = { state: JobsState; controllers: Map<string, AbortController>; loaded: Promise<void>; saveTimer: NodeJS.Timeout | null };
@@ -18,7 +23,7 @@ const g = globalThis as unknown as { __storyJobs?: Runner };
 
 function runner(): Runner {
   if (!g.__storyJobs) {
-    const r: Runner = { state: { jobs: [], concurrency: 2, paused: false, totals: { stt: 0, llm: 0, runs: 0 } }, controllers: new Map(), loaded: Promise.resolve(), saveTimer: null };
+    const r: Runner = { state: { jobs: [], concurrency: DEFAULT_CONCURRENCY, paused: false, totals: { stt: 0, llm: 0, runs: 0 } }, controllers: new Map(), loaded: Promise.resolve(), saveTimer: null };
     r.loaded = (async () => {
       const saved = await readJson<JobsState>(FILE).catch(() => null);
       if (saved) {
@@ -144,7 +149,7 @@ export async function enqueue(classIds: string[], mode: JobMode) {
     created.push({
       id: randomUUID().slice(0, 8),
       classId,
-      title: info.title,
+      title: fullLabel(info.display),
       // "stories only" needs a transcript; fall back to a full run without one
       mode: mode === "stories" && !info.transcribed ? "full" : mode,
       status: "queued",
@@ -194,15 +199,26 @@ export async function retry(jobId: string) {
 export async function updateSettings(s: { concurrency?: number; paused?: boolean }) {
   const r = runner();
   await r.loaded;
-  if (s.concurrency !== undefined) r.state.concurrency = Math.min(6, Math.max(1, Math.round(s.concurrency)));
+  if (s.concurrency !== undefined) r.state.concurrency = Math.min(MAX_CONCURRENCY, Math.max(1, Math.round(s.concurrency)));
   if (s.paused !== undefined) r.state.paused = s.paused;
   persist(r);
   pump();
 }
 
+/** forget finished runs and the spending totals (running and queued jobs stay) */
 export async function clearHistory() {
   const r = runner();
   await r.loaded;
   r.state.jobs = r.state.jobs.filter((j) => j.status === "queued" || j.status === "running");
+  r.state.totals = { stt: 0, llm: 0, runs: 0 };
+  persist(r);
+}
+
+/** back to a fresh queue: no history, no totals, default speed, not paused */
+export async function resetQueue() {
+  await clearHistory();
+  const r = runner();
+  r.state.concurrency = DEFAULT_CONCURRENCY;
+  r.state.paused = false;
   persist(r);
 }

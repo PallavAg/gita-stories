@@ -2,7 +2,7 @@
 
 import { AlertTriangle, Check, Loader2 } from "lucide-react";
 import { useEffect, useState } from "react";
-import { estimateSeconds, fmtUsd } from "@/lib/client/jobs";
+import { estimateSeconds } from "@/lib/client/jobs";
 import type { ClassInfo, Job, JobStep } from "@/lib/types";
 import { cx, Pill, ProgressBar } from "./ui";
 
@@ -86,9 +86,4 @@ export function JobProgress({ job, compact }: { job: Job; compact?: boolean }) {
       </div>
     </div>
   );
-}
-
-export function jobCost(job: Job) {
-  const c = job.cost.stt + job.cost.llm;
-  return c ? fmtUsd(c) : null;
 }

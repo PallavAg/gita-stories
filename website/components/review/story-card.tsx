@@ -30,6 +30,8 @@ export function StoryCard({
   onSave,
   onDiscard,
   onDelete,
+  canUndo,
+  onUndo,
 }: {
   story: Story | null;
   draft: Draft | null;
@@ -43,6 +45,8 @@ export function StoryCard({
   onSave: (d: Draft, status?: Story["status"]) => void;
   onDiscard: () => void;
   onDelete: () => void;
+  canUndo: boolean;
+  onUndo: () => void;
 }) {
   const s = (draft ?? story)!;
   const dirty = !!draft;
@@ -93,13 +97,15 @@ export function StoryCard({
           onSave={onSave}
           onDiscard={onDiscard}
           onDelete={onDelete}
+          canUndo={canUndo}
+          onUndo={onUndo}
         />
       )}
     </div>
   );
 }
 
-function Editor({ s, dirty, words, rohit, media, saving, set, onSave, onDiscard, onDelete }: { s: Draft; dirty: boolean; words: Word[] | null; rohit: number[]; media: Media; saving: boolean; set: (p: Partial<Draft>) => void; onSave: (d: Draft, status?: Story["status"]) => void; onDiscard: () => void; onDelete: () => void }) {
+function Editor({ s, dirty, words, rohit, media, saving, set, onSave, onDiscard, onDelete, canUndo, onUndo }: { s: Draft; dirty: boolean; words: Word[] | null; rohit: number[]; media: Media; saving: boolean; set: (p: Partial<Draft>) => void; onSave: (d: Draft, status?: Story["status"]) => void; onDiscard: () => void; onDelete: () => void; canUndo: boolean; onUndo: () => void }) {
   const [editingText, setEditingText] = useState(false);
   const [showSummary, setShowSummary] = useState(!!s.summary && s.origin === "ai");
   const max = media.duration || Infinity;
@@ -148,7 +154,7 @@ function Editor({ s, dirty, words, rohit, media, saving, set, onSave, onDiscard,
         </div>
         {showSummary ? (
           <Field label="Summary">
-            <textarea value={s.summary} onChange={(e) => set({ summary: e.target.value })} rows={2} placeholder="One or two sentences" className="input h-auto resize-y py-2" />
+            <textarea value={s.summary} onChange={(e) => set({ summary: e.target.value })} rows={5} placeholder="One or two sentences" className="input h-auto min-h-28 resize-y py-2 leading-relaxed" />
           </Field>
         ) : (
           <button type="button" onClick={() => setShowSummary(true)} className="text-xs text-stone-500 hover:text-stone-900">
@@ -217,6 +223,11 @@ function Editor({ s, dirty, words, rohit, media, saving, set, onSave, onDiscard,
         {s.status === "approved" && (
           <Button variant="ghost" size="sm" loading={saving} onClick={() => onSave(s, "suggested")} icon={<Undo2 className="h-3.5 w-3.5" />} title="Move back to “to review”">
             Undo approval
+          </Button>
+        )}
+        {(canUndo || dirty) && (
+          <Button variant="ghost" size="sm" onClick={onUndo} disabled={!canUndo} icon={<RotateCcw className="h-3.5 w-3.5" />} title="Undo the last change (⌘Z)">
+            Undo
           </Button>
         )}
         {dirty && !s.isNew && (
@@ -302,8 +313,7 @@ function NudgeButton({ onClick, children }: { onClick: () => void; children: Rea
 /** zoomed bar around the story with draggable start/end handles; click to seek */
 function RangeEditor({ s, media, setStart, setEnd }: { s: Draft; media: Media; setStart: (v: number) => void; setEnd: (v: number) => void }) {
   const bar = useRef<HTMLDivElement>(null);
-  const len = s.end - s.start;
-  const pad = Math.max(15, len * 0.25);
+  const pad = 30; // seconds shown either side of the story on the zoomed bar
   // freeze the window while dragging so the bar doesn't move under the pointer
   const [frozen, setFrozen] = useState<[number, number] | null>(null);
   const [w0, w1] = frozen ?? [Math.max(0, s.start - pad), Math.min(media.duration || s.end + pad, s.end + pad)];

@@ -1,6 +1,6 @@
 "use client";
 
-import { BookOpen, Sparkles } from "lucide-react";
+import { BookOpen, Settings, Sparkles } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { isActive, useJobs } from "@/lib/client/jobs";
@@ -28,6 +28,9 @@ export function Nav() {
         <nav className="ml-auto flex items-center gap-1">
           {link("/", "Library", <BookOpen className="h-4 w-4" />, path === "/" || path.startsWith("/class"))}
           {link("/ai", "AI runs", <Sparkles className="h-4 w-4" />, path.startsWith("/ai"), running)}
+          <Link href="/settings" aria-label="Settings" title="Settings" className={cx("grid h-8 w-8 place-items-center rounded-lg transition-colors", path.startsWith("/settings") ? "bg-stone-900 text-white" : "text-stone-400 hover:bg-stone-100 hover:text-stone-700")}>
+            <Settings className="h-4 w-4" />
+          </Link>
           <UpdateButton />
         </nav>
       </div>

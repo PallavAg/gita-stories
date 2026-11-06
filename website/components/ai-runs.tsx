@@ -7,10 +7,11 @@ import { api } from "@/lib/client/api";
 import { estimateCost, estimateSeconds, fmtUsd, isActive, jobAction, useJobs } from "@/lib/client/jobs";
 import { usePref } from "@/lib/client/prefs";
 import { toast } from "@/lib/client/toast";
+import { fmtDate, fullLabel, matchesQuery, sortChronological } from "@/lib/names";
 import { fmtDuration } from "@/lib/transcript";
 import type { ClassInfo, Job } from "@/lib/types";
 import { useLibrary } from "./library";
-import { ClassStatusPill, JobProgress, jobCost, STEP_LABEL } from "./status";
+import { ClassStatusPill, JobProgress, STEP_LABEL } from "./status";
 import { Button, cx, ErrorBox, IconButton, Pill, Segmented, Spinner } from "./ui";
 
 type Meta = { prompt: string; promptVersion: number; sttModel: string; llmModel: string; sttUsdPerHour: number };
@@ -66,7 +67,7 @@ function QueueBar() {
         <label className="flex items-center gap-2 text-xs text-stone-500">
           At once
           <select value={jobs.concurrency} onChange={(e) => act({ action: "settings", concurrency: Number(e.target.value) })} className="h-8 rounded-lg border border-stone-200 bg-white px-2 text-sm text-stone-800">
-            {[1, 2, 3, 4, 5, 6].map((n) => (
+            {[1, 2, 4, 6, 8, 10, 12, 16, 20].map((n) => (
               <option key={n}>{n}</option>
             ))}
           </select>
@@ -106,6 +107,7 @@ function NewRun() {
   const jobs = useJobs();
   const [collection, setCollection] = usePref("aiCollection");
   const [filter, setFilter] = usePref("aiFilter");
+  const [sort] = usePref("librarySort");
   const [mode, setMode] = usePref("aiMode");
   const [q, setQ] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -120,16 +122,16 @@ function NewRun() {
   }, [jobs]);
   const all = useMemo(() => collections?.flatMap((c) => c.classes) ?? [], [collections]);
   const current = collections?.find((c) => c.key === collection) ?? collections?.[0];
-  const shown = (current?.classes ?? []).filter(
+  const shown = sortChronological(current?.classes ?? [], sort).filter(
     (c) =>
       (filter === "all" || (filter === "new" ? c.status === "new" : filter === "transcribed" ? c.status === "transcribed" : c.status === "review" || c.status === "reviewed")) &&
-      (!q || `${c.number ?? ""} ${c.title} ${c.group ?? ""}`.toLowerCase().includes(q.toLowerCase())),
+      (!q || matchesQuery(`${c.number ?? ""} ${fullLabel(c.display)} ${c.title} ${c.group ?? ""}`, q)),
   );
   const picked = all.filter((c) => selected.has(c.id));
   const modeFor = (c: ClassInfo) => (mode === "stories" && c.transcribed ? "stories" : "full");
   const hours = picked.reduce((t, c) => t + (c.duration ?? 3600), 0) / 3600;
   const cost = picked.reduce((t, c) => t + estimateCost(c.duration, modeFor(c)), 0);
-  const conc = jobs?.concurrency ?? 2;
+  const conc = jobs?.concurrency ?? 8;
   const minutes = picked.reduce((t, c) => t + estimateSeconds(c.duration, "total", modeFor(c)), 0) / 60 / Math.min(conc, Math.max(1, picked.length));
   const needsTranscript = mode === "stories" ? picked.filter((c) => !c.transcribed).length : 0;
   const big = picked.length > 10 || cost > 5;
@@ -212,8 +214,7 @@ function NewRun() {
             {shown.map((c) => (
               <label key={c.id} className={cx("flex cursor-pointer items-center gap-3 border-b border-stone-50 px-4 py-2 hover:bg-stone-50", busy.has(c.id) && "cursor-default opacity-60")}>
                 <input type="checkbox" disabled={busy.has(c.id)} checked={selected.has(c.id)} onChange={() => toggle(c.id)} />
-                <span className="w-8 shrink-0 text-right text-xs tabular-nums text-stone-400">{c.number ?? ""}</span>
-                <span className="min-w-0 flex-1 truncate">{c.group && <span className="text-stone-400">{c.group} · </span>}{c.title}</span>
+                <span className="min-w-0 flex-1 truncate" title={c.fileName}>{c.display.title}{c.display.note && <span className="text-xs text-stone-400"> {c.display.note}</span>}{c.display.date && <span className="text-xs text-stone-400"> · {fmtDate(c.display.date)}</span>}{c.number != null && <span className="text-xs tabular-nums text-stone-400"> · #{c.number}</span>}</span>
                 <span className="shrink-0 text-xs text-stone-400">{fmtDuration(c.duration)}</span>
                 <ClassStatusPill info={c} job={latest.get(c.id) ?? null} />
               </label>
@@ -233,7 +234,7 @@ function NewRun() {
               <p className="text-xs text-stone-500">
                 {picked.length ? (
                   <>
-                    <span className="font-medium text-stone-800">{picked.length} {picked.length === 1 ? "class" : "classes"}</span> · {hours.toFixed(1)} h of audio · ≈ <span className="font-medium text-stone-800">{fmtUsd(cost)}</span> · ≈ {Math.max(1, Math.round(minutes))} min with {conc} at once
+                    <span className="font-medium text-stone-800">{picked.length} {picked.length === 1 ? "class" : "classes"}</span> · {hours.toFixed(1)} h of audio · ≈ {Math.max(1, Math.round(minutes))} min with {conc} at once
                     {needsTranscript > 0 && <> · {needsTranscript} not transcribed yet, so they’ll get a full run</>}
                   </>
                 ) : (
@@ -247,14 +248,14 @@ function NewRun() {
                   </Button>
                 )}
                 <Button variant="primary" disabled={!picked.length} loading={starting} onClick={start} icon={<Sparkles className="h-4 w-4" />}>
-                  {confirming ? `Yes, spend about ${fmtUsd(cost)}` : `Run ${picked.length || ""}`.trim()}
+                  {confirming ? "Yes, start" : `Run ${picked.length || ""}`.trim()}
                 </Button>
               </div>
             </div>
             {confirming && (
               <p className="flex items-center gap-2 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
                 <AlertTriangle className="h-3.5 w-3.5" />
-                This is a bigger batch ({picked.length} classes, about {fmtUsd(cost)}). You can pause or cancel the queue at any time.
+                This is a bigger batch ({picked.length} classes, {hours.toFixed(1)} h of audio). You can pause or cancel the queue at any time.
               </p>
             )}
           </div>
@@ -338,7 +339,6 @@ function HistoryRow({ job }: { job: Job }) {
             {job.status === "failed" && <>Failed while {STEP_LABEL[job.errorStep ?? job.step].toLowerCase()} · </>}
             {job.status === "interrupted" && <>Interrupted (server restarted) · </>}
             {job.status === "canceled" && <>Canceled · </>}
-            {jobCost(job) && <>{jobCost(job)} · </>}
             {took != null && <>{took < 60 ? `${took}s` : `${Math.round(took / 60)} min`} · </>}
             {when}
           </p>
@@ -375,7 +375,7 @@ function HowItWorks() {
   return (
     <section className="rounded-xl border border-stone-200 bg-white">
       <button type="button" onClick={() => setOpen(!open)} className="flex w-full items-center gap-2 px-4 py-3 text-left font-semibold">
-        How it works, prompt and costs
+        How it works and prompt
         <ChevronDown className={cx("ml-auto h-4 w-4 text-stone-400 transition-transform", open && "rotate-180")} />
       </button>
       {open && (
@@ -386,9 +386,6 @@ function HowItWorks() {
             <li><b>Find stories</b> — {meta?.llmModel ?? "Grok"} reads the transcript, works out which speaker is Rohit, and lists his stories with times, titles and shlokas.</li>
             <li><b>Save</b> — results go to <code className="rounded bg-stone-100 px-1">stories/classes/…json</code>. Re-running keeps anything you approved, rejected or added.</li>
           </ol>
-          <p>
-            Costs: transcription ≈ ${meta?.sttUsdPerHour ?? 0.1} per audio hour (estimated — xAI doesn’t report it), Grok is billed per token and reported exactly. A typical 1–2 hour class costs $0.25–0.50 in total.
-          </p>
           {meta ? (
             <div>
               <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-stone-400">Prompt (version {meta.promptVersion}) · edit in website/lib/server/pipeline.ts</p>

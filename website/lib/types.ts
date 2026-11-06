@@ -1,5 +1,7 @@
 // Types shared by the server (API routes) and the browser.
 
+import type { Described } from "./names";
+
 export type CollectionKey = "sunday" | "saturday" | "chapters";
 
 export type ClassStatus = "new" | "transcribed" | "review" | "reviewed";
@@ -12,7 +14,12 @@ export type ClassInfo = {
   rel: string;
   /** leading number from the file name, for ordering */
   number: number | null;
+  /** cleaned-up title from the file name (still the original wording) */
   title: string;
+  /** standardised name, series and date worked out from the title (display only, files are never renamed) */
+  display: Described;
+  /** the file name as it is on disk, e.g. "014 - Chapter 2 - Shlokas 57-65.mp3" */
+  fileName: string;
   /** sub-folder, e.g. "CHAPTER 2" (chapters series only) */
   group: string | null;
   duration: number | null;
@@ -48,12 +55,12 @@ export type Story = {
 export type ClassRecord = {
   classId: string;
   stories: Story[];
-  ai: { model: string; ranAt: string; rohitSpeakers: string[]; costUsd: number; promptVersion: number } | null;
+  ai: { model: string; ranAt: string; rohitSpeakers: string[]; costUsd: number; promptVersion: number; reasoningEffort?: ReasoningEffort } | null;
   updatedAt: string;
 };
 
-/** compact transcript word: [start, end, text, speaker] — speaker null when unknown */
-export type Word = [number, number, string, number | null];
+/** compact transcript word: [start, end, text, speaker, gap?] — speaker null when unknown; gap = index of the re-transcribed stretch it came from */
+export type Word = [number, number, string, number | null, number?];
 
 export type ClassDetail = { info: ClassInfo; record: ClassRecord; words: Word[] | null; rohitSpeakers: number[] };
 
@@ -106,4 +113,23 @@ export type JobsState = {
   concurrency: number;
   paused: boolean;
   totals: { stt: number; llm: number; runs: number };
+};
+
+export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
+
+/** app settings saved to stories/settings.json */
+export type AppSettings = {
+  /** how hard Grok thinks when finding stories (xAI's default is "high") */
+  reasoningEffort: ReasoningEffort;
+  /** keep "uh", "um" etc. in new transcripts */
+  fillerWords: boolean;
+};
+
+export type DataStats = {
+  dataDir: string;
+  transcripts: number;
+  classesWithStories: number;
+  stories: { suggested: number; approved: number; rejected: number };
+  deletedBatches: number;
+  version: string | null;
 };

@@ -4,11 +4,13 @@ import { ArrowLeft, ChevronDown, Keyboard, Plus, RefreshCw, Sparkles } from "luc
 import Link from "next/link";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api } from "@/lib/client/api";
-import { estimateCost, fmtUsd, isActive, jobAction, useJobs } from "@/lib/client/jobs";
+import { isActive, jobAction, useJobs } from "@/lib/client/jobs";
 import { usePref } from "@/lib/client/prefs";
 import { toast } from "@/lib/client/toast";
+import { fmtDate } from "@/lib/names";
 import { fmtDuration, fmtTime } from "@/lib/transcript";
 import type { ClassDetail, Job, Story } from "@/lib/types";
+import { FileNamePanel, FileNameToggle } from "../file-name";
 import { ClassStatusPill, JobProgress } from "../status";
 import { Button, cx, ErrorBox, Segmented, Spinner } from "../ui";
 import { Player } from "./player";
@@ -25,6 +27,7 @@ export function ClassReview({ id }: { id: string }) {
   const [openId, setOpenId] = useState<string | null>(null);
   const [saving, setSaving] = useState<string | null>(null);
   const [tab, setTab] = useState<"stories" | "transcript">("stories");
+  const [showFile, setShowFile] = useState(false);
   const [showRejected, setShowRejected] = usePref("showRejected");
   const [mode, setMode] = usePref("mediaMode");
   const [rate, setRate] = usePref("playbackRate");
@@ -77,13 +80,49 @@ export function ClassReview({ id }: { id: string }) {
     return () => window.removeEventListener("beforeunload", h);
   }, [dirtyCount]);
 
-  const change = useCallback((d: Draft) => setDrafts((all) => ({ ...all, [d.id]: d })), []);
-  const discard = (sid: string) =>
+  // Undo for unsaved edits: earlier versions of each story's draft, newest last (null = back to the saved story).
+  const [history, setHistory] = useState<Record<string, (Draft | null)[]>>({});
+  const draftsRef = useRef(drafts);
+  useLayoutEffect(() => {
+    draftsRef.current = drafts;
+  });
+  const lastEdit = useRef<{ id: string; t: number } | null>(null);
+  const change = useCallback((d: Draft) => {
+    const now = Date.now();
+    const last = lastEdit.current;
+    // a burst of edits (typing a word, dragging a handle) is one undo step
+    if (!last || last.id !== d.id || now - last.t > 700) {
+      const prev = draftsRef.current[d.id] ?? null;
+      setHistory((h) => ({ ...h, [d.id]: [...(h[d.id] ?? []), prev].slice(-100) }));
+    }
+    lastEdit.current = { id: d.id, t: now };
+    setDrafts((all) => ({ ...all, [d.id]: d }));
+  }, []);
+  const undo = (sid: string) => {
+    const stack = history[sid];
+    if (!stack?.length) return;
+    const prev = stack[stack.length - 1];
+    lastEdit.current = null;
+    setHistory((h) => ({ ...h, [sid]: stack.slice(0, -1) }));
+    setDrafts((all) => {
+      const next = { ...all };
+      if (prev) next[sid] = prev;
+      else delete next[sid];
+      return next;
+    });
+  };
+  const discard = (sid: string) => {
     setDrafts((all) => {
       const rest = { ...all };
       delete rest[sid];
       return rest;
     });
+    setHistory((h) => {
+      const rest = { ...h };
+      delete rest[sid];
+      return rest;
+    });
+  };
 
   const nextToReview = (after: Story) => stories.find((s) => s.status === "suggested" && s.id !== after.id && s.start > after.start) ?? stories.find((s) => s.status === "suggested" && s.id !== after.id);
 
@@ -143,13 +182,13 @@ export function ClassReview({ id }: { id: string }) {
   // keyboard: space play/pause, [ ] set start/end to playhead, ⌘S save, ⌘↵ approve, esc close
   const openStoryObj = stories.find((s) => s.id === openId) ?? null;
   const openDraft = openId ? (drafts[openId] ?? openStoryObj) : null;
-  const keyState = useRef({ openDraft, media, save, change });
+  const keyState = useRef({ openDraft, media, save, change, undo });
   useLayoutEffect(() => {
-    keyState.current = { openDraft, media, save, change };
+    keyState.current = { openDraft, media, save, change, undo };
   });
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const { openDraft: d, media: m, save: sv, change: ch } = keyState.current;
+      const { openDraft: d, media: m, save: sv, change: ch, undo: un } = keyState.current;
       const typing = e.target instanceof HTMLElement && (["INPUT", "TEXTAREA", "SELECT"].includes(e.target.tagName) || e.target.isContentEditable);
       if ((e.metaKey || e.ctrlKey) && e.key === "s") {
         e.preventDefault();
@@ -157,7 +196,11 @@ export function ClassReview({ id }: { id: string }) {
       } else if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && d) {
         e.preventDefault();
         sv(d, "approved");
-      } else if (typing) return;
+      } else if (typing) return; // text fields keep their own ⌘Z
+      else if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === "z" && d) {
+        e.preventDefault();
+        un(d.id);
+      }
       else if (e.key === " " && !(e.target instanceof HTMLButtonElement)) {
         e.preventDefault();
         m.toggle();
@@ -195,12 +238,18 @@ export function ClassReview({ id }: { id: string }) {
           <p className="text-xs text-stone-500">
             {COLLECTION_LABEL[info.collection]}
             {info.group && <> · {info.group}</>}
-            {info.number != null && <> · #{info.number}</>} · {fmtDuration(info.duration)}
+            {info.number != null && <> · #{info.number}</>}
+            {info.display.note && <> · {info.display.note}</>}
+            {info.display.date && <> · {fmtDate(info.display.date)}</>} · {fmtDuration(info.duration)}
           </p>
-          <h1 className="text-lg font-semibold tracking-tight">{info.title}</h1>
+          <div className="flex items-center gap-1">
+            <h1 className="text-lg font-semibold tracking-tight">{info.display.title}</h1>
+            <FileNameToggle open={showFile} onToggle={() => setShowFile(!showFile)} />
+          </div>
+          {showFile && <FileNamePanel info={info} className="mt-1 max-w-xl" />}
         </div>
         <ClassStatusPill info={{ ...info, counts: { suggested: stories.filter((s) => s.status === "suggested").length, approved: stories.filter((s) => s.status === "approved").length, rejected: rejectedCount }, status: !processed ? info.status : stories.some((s) => s.status === "suggested") ? "review" : "reviewed" }} job={running ? job : null} />
-        {processed && !running && <RerunMenu id={id} duration={info.duration} transcribed={!!words} />}
+        {processed && !running && <RerunMenu id={id} transcribed={!!words} />}
       </div>
 
       <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)]">
@@ -219,7 +268,7 @@ export function ClassReview({ id }: { id: string }) {
             onOpenStory={openStory}
           />
           <p className="mt-2 hidden items-center gap-1.5 text-[11px] text-stone-400 lg:flex">
-            <Keyboard className="h-3 w-3" /> Space play/pause · [ ] set start/end to playhead · ⌘S save · ⌘↵ approve · Esc close
+            <Keyboard className="h-3 w-3" /> Space play/pause · [ ] set start/end to playhead · ⌘S save · ⌘Z undo · ⌘↵ approve · Esc close
           </p>
         </div>
 
@@ -244,7 +293,7 @@ export function ClassReview({ id }: { id: string }) {
           )}
 
           {!processed && !running ? (
-            <EmptyState id={id} duration={info.duration} transcribed={!!words} onAdd={() => addStory(media.time)} />
+            <EmptyState id={id} transcribed={!!words} onAdd={() => addStory(media.time)} />
           ) : (
             <>
               <div className="mb-3 flex items-center gap-2">
@@ -259,7 +308,11 @@ export function ClassReview({ id }: { id: string }) {
                 <div className="space-y-2">
                   {visible.length === 0 && (
                     <div className="rounded-xl border border-dashed border-stone-300 p-8 text-center text-stone-500">
-                      The AI didn’t find any stories in this class. If you hear one, add it with “Add story” or from the full transcript.
+                      {running
+                        ? "Stories will appear here when the AI run finishes."
+                        : record.ai
+                          ? "The AI didn’t find any stories in this class. If you hear one, add it with “Add story” or from the full transcript."
+                          : "No stories yet. Add one with “Add story” or from the full transcript."}
                     </div>
                   )}
                   {visible.map((s) => (
@@ -276,6 +329,8 @@ export function ClassReview({ id }: { id: string }) {
                       onChange={change}
                       onSave={save}
                       onDiscard={() => discard(s.id)}
+                      canUndo={!!history[s.id]?.length}
+                      onUndo={() => undo(s.id)}
                       onDelete={() => remove(drafts[s.id] ?? s)}
                     />
                   ))}
@@ -301,7 +356,7 @@ export function ClassReview({ id }: { id: string }) {
   );
 }
 
-function EmptyState({ id, duration, transcribed, onAdd }: { id: string; duration: number | null; transcribed: boolean; onAdd: () => void }) {
+function EmptyState({ id, transcribed, onAdd }: { id: string; transcribed: boolean; onAdd: () => void }) {
   const [busy, setBusy] = useState(false);
   const mode = transcribed ? "stories" : "full";
   const run = async () => {
@@ -321,7 +376,7 @@ function EmptyState({ id, duration, transcribed, onAdd }: { id: string; duration
       </div>
       <h2 className="font-semibold">No stories yet</h2>
       <p className="mx-auto mt-1 max-w-sm text-stone-500">
-        {transcribed ? "This class is transcribed. Let Grok find the stories in it" : "Transcribe this class and let Grok find the stories Rohit tells"} — usually a few minutes, about {fmtUsd(estimateCost(duration, mode))}.
+        {transcribed ? "This class is transcribed. Let Grok find the stories in it" : "Transcribe this class and let Grok find the stories Rohit tells"}. It usually takes a few minutes.
       </p>
       <div className="mt-5 flex justify-center gap-2">
         <Button variant="primary" loading={busy} onClick={run} icon={<Sparkles className="h-4 w-4" />}>
@@ -335,7 +390,7 @@ function EmptyState({ id, duration, transcribed, onAdd }: { id: string; duration
   );
 }
 
-function RerunMenu({ id, duration, transcribed }: { id: string; duration: number | null; transcribed: boolean }) {
+function RerunMenu({ id, transcribed }: { id: string; transcribed: boolean }) {
   const [open, setOpen] = useState(false);
   const run = async (mode: "full" | "stories") => {
     setOpen(false);
@@ -356,9 +411,9 @@ function RerunMenu({ id, duration, transcribed }: { id: string; duration: number
           <div className="fixed inset-0 z-20" onClick={() => setOpen(false)} />
           <div className="absolute right-0 z-30 mt-1 w-72 rounded-xl border border-stone-200 bg-white p-1 shadow-lg">
             {transcribed && (
-              <MenuItem onClick={() => run("stories")} title="Find stories again" detail={`Uses the saved transcript and the current prompt · ≈${fmtUsd(estimateCost(duration, "stories"))}`} />
+              <MenuItem onClick={() => run("stories")} title="Find stories again" detail="Uses the saved transcript and the current prompt" />
             )}
-            <MenuItem onClick={() => run("full")} title="Re-transcribe and find stories" detail={`Starts from the audio again · ≈${fmtUsd(estimateCost(duration, "full"))}`} />
+            <MenuItem onClick={() => run("full")} title="Re-transcribe and find stories" detail="Starts from the audio again" />
             <p className="px-3 py-2 text-[11px] text-stone-400">Stories you approved, rejected or added are kept. Only unreviewed AI suggestions are replaced.</p>
           </div>
         </>

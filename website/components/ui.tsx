@@ -6,13 +6,14 @@ import { dismissToast, useToasts } from "@/lib/client/toast";
 
 export const cx = (...c: (string | false | null | undefined)[]) => c.filter(Boolean).join(" ");
 
-type Variant = "primary" | "secondary" | "ghost" | "danger" | "success";
+type Variant = "primary" | "secondary" | "ghost" | "danger" | "destructive" | "success";
 
 const VARIANTS: Record<Variant, string> = {
   primary: "bg-stone-900 text-white hover:bg-stone-700 disabled:bg-stone-300",
   secondary: "border border-stone-200 bg-white text-stone-700 hover:border-stone-300 hover:bg-stone-50 disabled:text-stone-300",
   ghost: "text-stone-600 hover:bg-stone-100 hover:text-stone-900 disabled:text-stone-300",
   danger: "border border-red-200 bg-white text-red-700 hover:bg-red-50 disabled:text-red-300",
+  destructive: "bg-red-600 text-white hover:bg-red-700 disabled:bg-red-300",
   success: "bg-emerald-600 text-white hover:bg-emerald-500 disabled:bg-emerald-300",
 };
 

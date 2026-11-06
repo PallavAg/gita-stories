@@ -4,6 +4,7 @@ import { readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import type { ClassInfo, ClassRecord, ClassStatus, CollectionInfo, CollectionKey } from "@/lib/types";
+import { describeCollection } from "@/lib/names";
 import { COLLECTIONS, DATA_DIR, FFPROBE, ROOT } from "./config";
 import { dataPath, readJson, writeJson } from "./store";
 
@@ -142,6 +143,8 @@ export async function listLibrary(): Promise<CollectionInfo[]> {
           id: `${key}/${rel}`,
           collection: key,
           rel,
+          fileName: `${rel.split("/").pop()}.mp3`,
+          display: { title: "", series: "", note: null, date: null },
           ...parseName(rel),
           duration: index[path.relative(ROOT, audioFile(key, rel))]?.duration ?? null,
           hasVideo: videos.has(rel),
@@ -152,6 +155,9 @@ export async function listLibrary(): Promise<CollectionInfo[]> {
         };
       })
       .sort((a, b) => (a.group ?? "").localeCompare(b.group ?? "", undefined, { numeric: true }) || (a.number ?? 1e9) - (b.number ?? 1e9) || a.rel.localeCompare(b.rel));
+
+    const names = describeCollection(classes.map((c) => ({ collection: key, number: c.number, title: c.title, group: c.group })));
+    classes.forEach((c, i) => (c.display = names[i]));
 
     out.push({ key, label: cfg.label, hasVideo: !!cfg.videoDir, classes });
   }

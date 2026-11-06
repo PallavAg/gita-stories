@@ -1,21 +1,42 @@
 import "server-only";
 import { execFile } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, rename, stat } from "node:fs/promises";
 import path from "node:path";
 import { groupLines } from "@/lib/transcript";
 import type { ClassInfo, ClassRecord, Story, Word } from "@/lib/types";
 import { FFMPEG, LLM_MODEL, STT_MODEL, STT_USD_PER_HOUR } from "./config";
 import { audioFile } from "./library";
 import { newStory, readJson, transcriptPath, updateRecord, writeJson } from "./store";
-import { chatJson, speechToText, withRetry } from "./xai";
+import { getSettings } from "./settings";
+import { chatJson, KEYTERMS, speechToText, VAD_THRESHOLD, withRetry } from "./xai";
 
+/**
+ * Everything kept from speech-to-text, so transcripts can be exported or re-processed later without paying again.
+ * Saved as stories/transcripts/<classId>.json; the previous version is archived when a class is re-transcribed.
+ */
 export type Transcript = {
+  /** 2 = full format below; 1 = early files without text/source/settings */
+  version: number;
   model: string;
   createdAt: string;
   language: string;
   duration: number;
-  gaps: { found: number; filledWords: number };
+  /** which recording this came from, to spot transcripts of a file that has since changed */
+  source: { collection: string; rel: string; fileName: string; bytes: number; modifiedAt: string } | null;
+  /** how it was produced */
+  settings: { diarize: boolean; keyterms: string[]; vadThreshold: number; fillerWords: boolean; gapSeconds: number; gapPadding: number } | null;
+  /** xAI's own plain-text transcript of the whole file (null for version 1 files) */
+  text: string | null;
+  /** merged words, in time order: [start, end, text, speaker, gap] — gap is the index into gaps.clips for recovered words */
   words: Word[];
+  gaps: {
+    found: number;
+    filledWords: number;
+    /** raw result for each re-transcribed stretch, times converted to the full recording; speakers are clip-local */
+    clips?: { from: number; to: number; clipStart: number; language: string; text: string; words: [number, number, string, number | null][] }[];
+  };
+  /** estimated speech-to-text cost in USD */
+  costUsd?: number;
 };
 
 type Progress = (detail: string, fraction?: number) => void;
@@ -23,6 +44,8 @@ type Progress = (detail: string, fraction?: number) => void;
 /** gaps in the transcript at least this long get re-transcribed on their own */
 const GAP_SECONDS = 4;
 const GAP_CONCURRENCY = 6;
+/** extra audio kept either side of a gap when cutting it out */
+const GAP_PADDING = 0.5;
 
 export const readTranscript = (classId: string) => readJson<Transcript>(transcriptPath(classId));
 
@@ -44,7 +67,7 @@ function clip(file: string, start: number, end: number, signal: AbortSignal): Pr
  */
 export async function transcribe(info: ClassInfo, signal: AbortSignal, progress: Progress, onRetry: (m: string) => void) {
   const file = audioFile(info.collection, info.rel);
-  const audio = await readFile(file).catch(() => {
+  const [audio, fileStat] = await Promise.all([readFile(file), stat(file)]).catch(() => {
     throw new Error(`Audio file not found: ${path.basename(file)}`);
   });
   progress("Uploading and transcribing the whole class");
@@ -56,15 +79,18 @@ export async function transcribe(info: ClassInfo, signal: AbortSignal, progress:
 
   let done = 0;
   const filled: Word[] = [];
+  const clips: NonNullable<Transcript["gaps"]["clips"]> = [];
   progress(`Re-transcribing ${gaps.length} skipped stretches`, 0);
   for (let i = 0; i < gaps.length; i += GAP_CONCURRENCY) {
     await Promise.all(
-      gaps.slice(i, i + GAP_CONCURRENCY).map(async ([g0, g1]) => {
-        const start = Math.max(g0 - 0.5, 0);
-        const res = await withRetry(async () => speechToText(await clip(file, start, g1 + 0.5, signal), "gap.mp3", signal), signal, onRetry);
+      gaps.slice(i, i + GAP_CONCURRENCY).map(async ([g0, g1], j) => {
+        const idx = i + j;
+        const start = Math.max(g0 - GAP_PADDING, 0);
+        const res = await withRetry(async () => speechToText(await clip(file, start, g1 + GAP_PADDING, signal), "gap.mp3", signal), signal, onRetry);
+        clips[idx] = { from: g0, to: g1, clipStart: start, language: res.language, text: res.text, words: res.words.map((w) => [w.start + start, w.end + start, w.text, w.speaker ?? null]) };
         for (const w of res.words) {
           const s = w.start + start, e = w.end + start;
-          if (s >= g0 && e <= g1 + 0.2) filled.push([s, e, w.text, null]);
+          if (s >= g0 && e <= g1 + 0.2) filled.push([s, e, w.text, null, idx]);
         }
         done++;
         progress(`Re-transcribing skipped stretches (${done} of ${gaps.length})`, done / gaps.length);
@@ -73,17 +99,34 @@ export async function transcribe(info: ClassInfo, signal: AbortSignal, progress:
   }
   words = [...words, ...filled].sort((a, b) => a[0] - b[0]);
 
+  const sttCost = ((full.duration + gaps.reduce((t, [a, b]) => t + (b - a) + 2 * GAP_PADDING, 0)) / 3600) * STT_USD_PER_HOUR;
   const transcript: Transcript = {
+    version: 2,
     model: STT_MODEL,
     createdAt: new Date().toISOString(),
     language: full.language,
     duration: full.duration,
-    gaps: { found: gaps.length, filledWords: filled.length },
+    source: { collection: info.collection, rel: info.rel, fileName: info.fileName, bytes: fileStat.size, modifiedAt: fileStat.mtime.toISOString() },
+    settings: { diarize: true, keyterms: KEYTERMS, vadThreshold: VAD_THRESHOLD, fillerWords: (await getSettings()).fillerWords, gapSeconds: GAP_SECONDS, gapPadding: GAP_PADDING },
+    text: full.text ?? null,
     words,
+    gaps: { found: gaps.length, filledWords: filled.length, clips },
+    costUsd: sttCost,
   };
+  await archiveTranscript(info.id);
   await writeJson(transcriptPath(info.id), transcript, false);
-  const sttCost = ((full.duration + gaps.reduce((t, [a, b]) => t + (b - a) + 1, 0)) / 3600) * STT_USD_PER_HOUR;
   return { transcript, cost: sttCost };
+}
+
+/** keep the previous transcript when a class is re-transcribed: stories/transcripts/.history/<classId>.<date>.json */
+async function archiveTranscript(classId: string) {
+  const current = transcriptPath(classId);
+  const old = await readJson<Pick<Transcript, "createdAt">>(current).catch(() => null);
+  if (!old) return;
+  const stamp = (old.createdAt ?? new Date().toISOString()).replace(/[:.]/g, "-");
+  const dest = path.join(path.dirname(transcriptPath(".history/x")), `${classId}.${stamp}.json`);
+  await mkdir(path.dirname(dest), { recursive: true });
+  await rename(current, dest);
 }
 
 // ---------- story finding ----------
@@ -164,7 +207,7 @@ export async function findStories(info: ClassInfo, transcript: Transcript, signa
   const lines = groupLines(transcript.words);
   const body = lines.map((l) => `[${ts(l.start)}] S${l.spk ?? "?"}: ${l.text.join(" ")}`).join("\n");
   const user = `Class title: ${info.title}${info.group ? ` (${info.group})` : ""}\n\nTranscript:\n${body}`;
-  const { parsed, costUsd } = await withRetry(() => chatJson(PROMPT, user, SCHEMA, signal), signal, onRetry);
+  const { parsed, costUsd, reasoningEffort } = await withRetry(() => chatJson(PROMPT, user, SCHEMA, signal), signal, onRetry);
 
   // The model only sees line start times: snap its start/end to the matching line, and stretch the end to that line's end.
   const byStart = new Map(lines.map((l) => [ts(l.start), l]));
@@ -178,7 +221,7 @@ export async function findStories(info: ClassInfo, transcript: Transcript, signa
     const end = Math.round(Math.max(last.end, first.end) * 10) / 10;
     return [{ ...s, startSec: start, endSec: end }];
   });
-  return { stories, rohitSpeakers: (parsed.rohit_speakers as string[]) ?? [], costUsd };
+  return { stories, rohitSpeakers: (parsed.rohit_speakers as string[]) ?? [], costUsd, reasoningEffort };
 }
 
 const overlap = (a: { start: number; end: number }, b: { start: number; end: number }) =>
@@ -212,7 +255,7 @@ export async function saveStories(info: ClassInfo, result: Awaited<ReturnType<ty
     return {
       ...rec,
       stories: [...keep, ...fresh].sort((x, y) => x.start - y.start),
-      ai: { model: LLM_MODEL, ranAt: new Date().toISOString(), rohitSpeakers: result.rohitSpeakers, costUsd: result.costUsd, promptVersion: PROMPT_VERSION },
+      ai: { model: LLM_MODEL, ranAt: new Date().toISOString(), rohitSpeakers: result.rohitSpeakers, costUsd: result.costUsd, promptVersion: PROMPT_VERSION, reasoningEffort: result.reasoningEffort },
     };
   });
   return { record, found: result.stories.length, added, kept };

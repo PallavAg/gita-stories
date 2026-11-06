@@ -13,7 +13,7 @@ export const STORY_COLORS: Record<Story["status"], string> = {
   rejected: "bg-stone-300",
 };
 
-const RATES = [0.75, 1, 1.25, 1.5, 1.75, 2];
+const RATES = [1, 2, 2.5, 3];
 
 export function Player({
   attach,
@@ -80,21 +80,17 @@ export function Player({
           </span>
           {media.range && <span className="ml-2 rounded-md bg-orange-50 px-1.5 py-0.5 text-xs text-orange-700">Playing section · stops at {fmtTime(media.range.end)}</span>}
           <div className="ml-auto flex items-center gap-2">
-            <select value={rate} onChange={(e) => onRate(Number(e.target.value))} aria-label="Playback speed" className="h-8 rounded-lg border border-stone-200 bg-white px-1.5 text-xs text-stone-600">
-              {RATES.map((r) => (
-                <option key={r} value={r}>
-                  {r}×
-                </option>
-              ))}
-            </select>
-            <Segmented
-              value={showVideo ? "video" : "audio"}
-              onChange={onMode}
-              options={[
-                { value: "audio", label: <><Headphones className="h-3.5 w-3.5" />Audio</> },
-                { value: "video", label: <><Film className="h-3.5 w-3.5" />Video</>, disabled: !hasVideo, title: hasVideo ? undefined : "No video for this recording" },
-              ]}
-            />
+            <Segmented value={String(rate)} onChange={(v) => onRate(Number(v))} options={RATES.map((r) => ({ value: String(r), label: `${r}×`, title: `Play at ${r}× speed` }))} />
+            {hasVideo && (
+              <Segmented
+                value={showVideo ? "video" : "audio"}
+                onChange={onMode}
+                options={[
+                  { value: "audio", label: <><Headphones className="h-3.5 w-3.5" />Audio</> },
+                  { value: "video", label: <><Film className="h-3.5 w-3.5" />Video</> },
+                ]}
+              />
+            )}
           </div>
         </div>
       </div>
@@ -133,7 +129,8 @@ function Timeline({ media, stories, openId, onOpenStory }: { media: Media; stori
       ))}
       <div className="pointer-events-none absolute top-0 h-full w-0.5 -translate-x-1/2 rounded bg-stone-900" style={{ left: `${(media.time / d) * 100}%` }} />
       {hover != null && (
-        <div className="pointer-events-none absolute -top-6 -translate-x-1/2 rounded bg-stone-900 px-1.5 py-0.5 text-[11px] tabular-nums text-white opacity-0 group-hover:opacity-100" style={{ left: `${(hover / d) * 100}%` }}>
+        // below the bar (above it would be clipped by the player's rounded box) and slid inwards near the ends
+        <div className="pointer-events-none absolute top-full z-10 rounded bg-stone-900 px-1.5 py-0.5 text-[11px] tabular-nums text-white opacity-0 group-hover:opacity-100" style={{ left: `${(hover / d) * 100}%`, transform: `translateX(-${(hover / d) * 100}%)` }}>
           {fmtTime(hover)}
         </div>
       )}
