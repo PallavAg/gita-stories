@@ -12,7 +12,7 @@ Needs Node.js 20+ and ffmpeg (`brew install ffmpeg`).
    - `audio/CHAPTER N/*.mp3`
 
    A video is matched to its audio by having the same file name.
-2. Add your xAI API key to `website/.env.local`:
+2. Rename `website/.env.local.example` to `website/.env.local` and paste your xAI API key into it:
    ```
    XAI_API_KEY=xai-...
    ```
