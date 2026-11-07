@@ -9,14 +9,25 @@ import { cx, Pill, ProgressBar } from "./ui";
 export function ClassStatusPill({ info, job }: { info: ClassInfo; job?: Job | null }) {
   if (job?.status === "running") return <Pill color="orange"><Loader2 className="h-3 w-3 animate-spin" />{STEP_LABEL[job.step]}</Pill>;
   if (job?.status === "queued") return <Pill color="orange">Queued</Pill>;
-  const { suggested, approved } = info.counts;
+  const { suggested, approved, rejected } = info.counts;
+  const reviewed = approved + rejected;
   switch (info.status) {
     case "new":
       return job?.status === "failed" ? <Pill color="red"><AlertTriangle className="h-3 w-3" />AI run failed</Pill> : <Pill>Not processed</Pill>;
     case "transcribed":
       return <Pill color="blue">Transcribed</Pill>;
     case "review":
-      return <Pill color="amber">{suggested} to review</Pill>;
+      return (
+        <span className="inline-flex shrink-0 items-center gap-1">
+          <Pill color="amber">{suggested} to review</Pill>
+          {reviewed > 0 && (
+            <Pill color="green" className="tabular-nums">
+              <Check className="h-3 w-3" />
+              {reviewed} reviewed
+            </Pill>
+          )}
+        </span>
+      );
     case "reviewed":
       return <Pill color="green"><Check className="h-3 w-3" />{approved ? `${approved} ${approved === 1 ? "story" : "stories"}` : "No stories"}</Pill>;
   }
