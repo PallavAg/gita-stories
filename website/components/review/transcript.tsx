@@ -1,7 +1,7 @@
 "use client";
 
 import { Plus } from "lucide-react";
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { fmtTime, groupLines, type Line, wordAt } from "@/lib/transcript";
 import type { Story, Word } from "@/lib/types";
 import { cx } from "../ui";
@@ -20,38 +20,114 @@ export function textBetween(words: Word[], start: number, end: number) {
     .join(" ");
 }
 
+/** start is green and end is rose everywhere marking shows up: buttons, word hover, the story's boundary bars */
+export const MARK_COLORS = {
+  start: {
+    button: "border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100",
+    armed: "border-emerald-600 bg-emerald-600 text-white hover:bg-emerald-700",
+    word: "hover:bg-emerald-500 hover:text-white",
+    bar: "border-emerald-500",
+    ring: "ring-emerald-400",
+    text: "text-emerald-700",
+  },
+  end: {
+    button: "border-rose-300 bg-rose-50 text-rose-800 hover:bg-rose-100",
+    armed: "border-rose-600 bg-rose-600 text-white hover:bg-rose-700",
+    word: "hover:bg-rose-500 hover:text-white",
+    bar: "border-rose-500",
+    ring: "ring-rose-400",
+    text: "text-rose-700",
+  },
+};
+
+/**
+ * Story time for marking word idx as the first or last word of a story. Times are kept to 0.1s (the server rounds
+ * them), so pick a value that still includes this word and leaves out its neighbour once rounded.
+ */
+function markTime(words: Word[], idx: number, which: "start" | "end") {
+  const r = (t: number) => Math.round(t * 10) / 10;
+  const [ws, we] = words[idx];
+  if (which === "start") return r(ws);
+  const next = words[idx + 1]?.[0] ?? Infinity;
+  return Math.max(Math.min(r(we), Math.floor(next * 10) / 10), Math.floor(ws * 10) / 10 + 0.1);
+}
+
 /**
  * Word-level transcript around a story: words inside [start, end] are normal, the context around them is faded.
- * Clicking a word jumps there; the word being spoken is highlighted.
+ * Clicking a word jumps there; the word being spoken is highlighted. While `marking`, clicking a word sets the
+ * story's start or end to it instead.
  */
-export function StoryTranscript({ words, start, end, time, rohit, onSeek }: { words: Word[]; start: number; end: number; time: number; rohit: number[]; onSeek: (t: number) => void }) {
+export function StoryTranscript({ words, start, end, time, rohit, onSeek, marking, onMark }: { words: Word[]; start: number; end: number; time: number; rohit: number[]; onSeek: (t: number) => void; marking?: "start" | "end" | null; onMark?: (t: number) => void }) {
   const CONTEXT = 30; // seconds of faded transcript shown before and after the story
-  const slice = useMemo(() => {
-    const from = Math.max(0, wordAt(words, start - CONTEXT));
-    const to = wordAt(words, end + CONTEXT);
-    return { from, lines: groupLines(words.slice(from, to + 1)) };
-  }, [words, start, end]);
-  const current = time >= start - CONTEXT && time <= end + CONTEXT ? wordAt(words, time) : -1;
-  if (!slice.lines.length) return <p className="text-stone-400">No transcript words in this section.</p>;
+  const REACH = 180; // while marking, how far past the story the transcript reaches on the side being moved
+  const before = marking === "start" ? REACH : CONTEXT;
+  const after = marking === "end" ? REACH : CONTEXT;
+  // lines are grouped over the whole class so they stay the same as the window around the story moves
+  const allLines = useMemo(() => groupLines(words), [words]);
+  const lines = useMemo(() => allLines.filter((l) => l.end >= start - before && l.start <= end + after), [allLines, start, end, before, after]);
+  const current = time >= start - before && time <= end + after ? wordAt(words, time) : -1;
+  const isInside = (ws: number) => ws >= start - 0.05 && ws < end;
+  const first = Math.max(0, wordAt(words, start - 0.05 - 1e-6) + 1);
+  const last = wordAt(words, end - 1e-6);
+
+  // Context lines come and go above the view as marking starts and stops, which would shift the text under the
+  // pointer. Remember where the visible lines sit in the scroll box and keep the first one that's still there in place.
+  const root = useRef<HTMLDivElement>(null);
+  const pins = useRef<{ idx: string; top: number }[]>([]);
+  const remember = useCallback(() => {
+    const box = root.current?.closest(".overflow-y-auto");
+    if (!box) return;
+    const { top: boxTop, bottom: boxBottom } = box.getBoundingClientRect();
+    pins.current = [];
+    for (const line of root.current!.querySelectorAll<HTMLElement>("[data-line]")) {
+      const r = line.getBoundingClientRect();
+      if (r.bottom > boxTop && r.top < boxBottom) pins.current.push({ idx: line.dataset.line!, top: r.top - boxTop });
+    }
+  }, []);
+  useLayoutEffect(() => {
+    const box = root.current?.closest(".overflow-y-auto");
+    for (const pin of pins.current) {
+      const line = root.current?.querySelector(`[data-line="${pin.idx}"]`);
+      if (!box || !line) continue;
+      box.scrollTop += line.getBoundingClientRect().top - box.getBoundingClientRect().top - pin.top;
+      break;
+    }
+    remember();
+  }, [lines, remember]);
+  useEffect(() => {
+    const box = root.current?.closest(".overflow-y-auto");
+    box?.addEventListener("scroll", remember, { passive: true });
+    return () => box?.removeEventListener("scroll", remember);
+  }, [remember]);
+
+  if (!lines.length) return <p className="text-stone-400">No transcript words in this section.</p>;
   return (
-    <div className="space-y-2 font-deva leading-relaxed">
-      {slice.lines.map((l) => (
-        <div key={l.first} className="flex gap-3">
-          <span className={cx("w-16 shrink-0 pt-0.5 text-[11px] font-sans", l.spk != null && rohit.includes(l.spk) ? "font-medium text-stone-600" : "text-stone-400")}>{speakerName(l.spk, rohit)}</span>
+    <div ref={root} className="space-y-3 font-deva text-[17px] leading-relaxed [overflow-anchor:none]">
+      {lines.map((l) => (
+        <div key={l.first} data-line={l.first} className="flex gap-3">
+          <span className={cx("w-16 shrink-0 pt-1.5 text-[11px] font-sans", l.spk != null && rohit.includes(l.spk) ? "font-medium text-stone-600" : "text-stone-400")}>{speakerName(l.spk, rohit)}</span>
           <p className="min-w-0 flex-1">
             {l.text.map((t, i) => {
-              const idx = slice.from + l.first + i;
+              const idx = l.first + i;
               const [ws] = words[idx];
-              const inside = ws >= start - 0.05 && ws < end;
+              const inside = isInside(ws);
               return (
+                <Fragment key={idx}>
                 <span
-                  key={idx}
-                  onClick={() => onSeek(ws)}
-                  title={fmtTime(ws, true)}
-                  className={cx("cursor-pointer rounded px-px hover:bg-orange-100", inside ? "text-stone-800" : "text-stone-300", idx === current && "bg-orange-200 text-stone-900")}
+                  onClick={() => (marking && onMark ? onMark(markTime(words, idx, marking)) : onSeek(ws))}
+                  title={marking ? `Story ${marking}s ${marking === "start" ? "at" : "after"} this word (${fmtTime(ws, true)})` : fmtTime(ws, true)}
+                  className={cx(
+                    "rounded px-px",
+                    marking ? cx("cursor-crosshair", MARK_COLORS[marking].word) : "cursor-pointer hover:bg-orange-100",
+                    inside ? "text-stone-800" : "text-stone-300",
+                    idx === current && "bg-orange-200 text-stone-900",
+                    idx === first && inside && cx("rounded-l-none border-l-2 pl-0.5", MARK_COLORS.start.bar),
+                    idx === last && inside && cx("rounded-r-none border-r-2 pr-0.5", MARK_COLORS.end.bar),
+                  )}
                 >
-                  {t}{" "}
-                </span>
+                  {t}
+                </span>{" "}
+                </Fragment>
               );
             })}
           </p>

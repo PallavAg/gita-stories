@@ -1,12 +1,13 @@
 "use client";
 
-import { Check, ChevronDown, Crosshair, Pause, Pencil, Play, RotateCcw, Trash2, Undo2, X } from "lucide-react";
+import { ArrowLeftToLine, ArrowRightToLine, Check, ChevronDown, ChevronRight, Crosshair, Pause, Pencil, Play, RotateCcw, Trash2, Undo2, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { toast } from "@/lib/client/toast";
 import { fmtTime, parseTime } from "@/lib/transcript";
 import type { Story, Word } from "@/lib/types";
 import { Button, cx, IconButton, Pill } from "../ui";
 import { STORY_COLORS } from "./player";
-import { StoryTranscript, textBetween } from "./transcript";
+import { MARK_COLORS, StoryTranscript, textBetween } from "./transcript";
 import type { Media } from "./use-media";
 
 export type Draft = Story & { isNew?: boolean };
@@ -50,7 +51,9 @@ export function StoryCard({
 }) {
   const s = (draft ?? story)!;
   const dirty = !!draft;
-  const playingThis = media.range && Math.abs(media.range.start - s.start) < 0.05 && media.playing;
+  // this story's section is loaded in the player (playing or paused partway); seeking inside the story keeps it
+  const inRange = !!media.range && Math.abs(media.range.end - s.end) < 0.05 && media.range.start >= s.start - 0.05 && media.range.start < s.end;
+  const playingThis = inRange && media.playing;
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (open) ref.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
@@ -63,7 +66,7 @@ export function StoryCard({
       <div className="flex items-center gap-3 px-3 py-2.5">
         <button
           type="button"
-          onClick={() => (playingThis ? media.pause() : media.playRange(s.start, s.end))}
+          onClick={() => (playingThis ? media.pause() : inRange ? media.play() : media.playRange(s.start, s.end))}
           aria-label={playingThis ? "Pause" : "Play this story"}
           className={cx("grid h-8 w-8 shrink-0 place-items-center rounded-full text-white", playingThis ? "bg-orange-500" : "bg-stone-800 hover:bg-stone-600")}
         >
@@ -84,6 +87,7 @@ export function StoryCard({
           <ChevronDown className={cx("h-4 w-4 shrink-0 text-stone-400 transition-transform", open && "rotate-180")} />
         </button>
       </div>
+      {inRange && <StoryProgress start={s.start} end={s.end} media={media} />}
 
       {open && (
         <Editor
@@ -107,30 +111,57 @@ export function StoryCard({
 
 function Editor({ s, dirty, words, rohit, media, saving, set, onSave, onDiscard, onDelete, canUndo, onUndo }: { s: Draft; dirty: boolean; words: Word[] | null; rohit: number[]; media: Media; saving: boolean; set: (p: Partial<Draft>) => void; onSave: (d: Draft, status?: Story["status"]) => void; onDiscard: () => void; onDelete: () => void; canUndo: boolean; onUndo: () => void }) {
   const [editingText, setEditingText] = useState(false);
-  const [showSummary, setShowSummary] = useState(!!s.summary && s.origin === "ai");
+  const [showSummary, setShowSummary] = useState(false);
+  const [showTimes, setShowTimes] = useState(false);
+  const [marking, setMarking] = useState<"start" | "end" | null>(null);
   const max = media.duration || Infinity;
   const clamp = (v: number) => Math.max(0, Math.min(max, Math.round(v * 10) / 10));
   const setStart = (v: number) => set({ start: Math.min(clamp(v), s.end - 1) });
   const setEnd = (v: number) => set({ end: Math.max(clamp(v), s.start + 1) });
   const aiChanged = s.ai && (Math.abs(s.ai.start - s.start) > 0.05 || Math.abs(s.ai.end - s.end) > 0.05);
+  const canMark = !!words && !editingText && s.transcriptOverride == null;
+
+  const mark = (t: number) => {
+    const v = clamp(t);
+    if (marking === "start" && v >= s.end) return toast("That word is after the story’s end. Mark the end first to move the story later.", "error");
+    if (marking === "end" && v <= s.start) return toast("That word is before the story’s start. Mark the start first to move the story earlier.", "error");
+    set(marking === "start" ? { start: v } : { end: v });
+    setMarking(null);
+  };
+  // Esc cancels marking instead of closing the story
+  useEffect(() => {
+    if (!marking) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.stopImmediatePropagation();
+      setMarking(null);
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [marking]);
 
   return (
     <div className="space-y-5 border-t border-stone-100 px-4 pb-4 pt-4">
       {/* timing */}
-      <section className="space-y-3">
-        <RangeEditor s={s} media={media} setStart={setStart} setEnd={setEnd} />
-        <div className="grid gap-3 sm:grid-cols-2">
-          <TimeControl label="Start" value={s.start} onChange={setStart} media={media} onPreview={() => media.playRange(s.start, Math.min(s.start + 6, s.end))} previewLabel="Play first 6s" />
-          <TimeControl label="End" value={s.end} onChange={setEnd} media={media} onPreview={() => media.playRange(Math.max(s.start, s.end - 6), s.end)} previewLabel="Play last 6s" />
-        </div>
-        {aiChanged && (
-          <p className="flex items-center gap-2 text-xs text-stone-500">
-            AI suggested {fmtTime(s.ai!.start)} – {fmtTime(s.ai!.end)}
-            <button type="button" className="inline-flex items-center gap-1 text-stone-600 underline-offset-2 hover:underline" onClick={() => set({ start: s.ai!.start, end: s.ai!.end })}>
-              <RotateCcw className="h-3 w-3" />
-              reset times
-            </button>
-          </p>
+      <section>
+        <Disclosure open={showTimes} onToggle={() => setShowTimes(!showTimes)} label="Timing controls" preview={`${fmtTime(s.start, true)} – ${fmtTime(s.end, true)}`} />
+        {showTimes && (
+          <div className="mt-3 space-y-3">
+            <RangeEditor s={s} media={media} setStart={setStart} setEnd={setEnd} />
+            <div className="grid gap-3 sm:grid-cols-2">
+              <TimeControl label="Start" value={s.start} onChange={setStart} media={media} onPreview={() => media.playRange(s.start, Math.min(s.start + 6, s.end))} previewLabel="Play first 6s" />
+              <TimeControl label="End" value={s.end} onChange={setEnd} media={media} onPreview={() => media.playRange(Math.max(s.start, s.end - 6), s.end)} previewLabel="Play last 6s" />
+            </div>
+            {aiChanged && (
+              <p className="flex items-center gap-2 text-xs text-stone-500">
+                AI suggested {fmtTime(s.ai!.start)} – {fmtTime(s.ai!.end)}
+                <button type="button" className="inline-flex items-center gap-1 text-stone-600 underline-offset-2 hover:underline" onClick={() => set({ start: s.ai!.start, end: s.ai!.end })}>
+                  <RotateCcw className="h-3 w-3" />
+                  reset times
+                </button>
+              </p>
+            )}
+          </div>
         )}
       </section>
 
@@ -152,21 +183,32 @@ function Editor({ s, dirty, words, rohit, media, saving, set, onSave, onDiscard,
             </p>
           )}
         </div>
-        {showSummary ? (
-          <Field label="Summary">
-            <textarea value={s.summary} onChange={(e) => set({ summary: e.target.value })} rows={5} placeholder="One or two sentences" className="input h-auto min-h-28 resize-y py-2 leading-relaxed" />
-          </Field>
-        ) : (
-          <button type="button" onClick={() => setShowSummary(true)} className="text-xs text-stone-500 hover:text-stone-900">
-            + Add a summary
-          </button>
-        )}
+        <div>
+          <Disclosure open={showSummary} onToggle={() => setShowSummary(!showSummary)} label="Summary" preview={s.summary || "None yet"} />
+          {showSummary && (
+            <textarea value={s.summary} onChange={(e) => set({ summary: e.target.value })} rows={5} placeholder="One or two sentences" aria-label="Summary" className="input mt-2 h-auto min-h-28 resize-y py-2 leading-relaxed" />
+          )}
+        </div>
       </section>
 
       {/* transcript */}
       <section>
-        <div className="mb-2 flex items-center gap-2">
+        <div className="mb-2 flex flex-wrap items-center gap-2">
           <h4 className="text-xs font-semibold uppercase tracking-wide text-stone-500">Transcript</h4>
+          {canMark &&
+            (["start", "end"] as const).map((k) => (
+              <button
+                key={k}
+                type="button"
+                onClick={() => setMarking(marking === k ? null : k)}
+                aria-pressed={marking === k}
+                title={marking === k ? "Cancel (Esc)" : `Then click the word where the story ${k === "start" ? "starts" : "ends"}`}
+                className={cx("inline-flex h-7 shrink-0 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium transition-colors", marking === k ? MARK_COLORS[k].armed : MARK_COLORS[k].button)}
+              >
+                {k === "start" ? <ArrowRightToLine className="h-3 w-3" /> : <ArrowLeftToLine className="h-3 w-3" />}
+                {marking === k ? `Click the ${k === "start" ? "first" : "last"} word…` : k === "start" ? "Mark start" : "Mark end"}
+              </button>
+            ))}
           {s.transcriptOverride != null && <Pill color="blue">Edited</Pill>}
           <div className="ml-auto flex gap-1">
             {s.transcriptOverride != null && !editingText && (
@@ -181,6 +223,7 @@ function Editor({ s, dirty, words, rohit, media, saving, set, onSave, onDiscard,
                 onClick={() => {
                   if (!editingText && s.transcriptOverride == null) set({ transcriptOverride: textBetween(words, s.start, s.end) });
                   setEditingText(!editingText);
+                  setMarking(null);
                 }}
                 icon={<Pencil className="h-3 w-3" />}
               >
@@ -189,15 +232,19 @@ function Editor({ s, dirty, words, rohit, media, saving, set, onSave, onDiscard,
             )}
           </div>
         </div>
-        <div className="scroll-thin max-h-72 overflow-y-auto rounded-lg bg-stone-50 p-3">
+        <div className={cx("scroll-thin max-h-[min(40rem,70vh)] overflow-y-auto rounded-lg bg-stone-50 p-4", marking && cx("ring-2", MARK_COLORS[marking].ring))}>
           {editingText ? (
-            <textarea value={s.transcriptOverride ?? ""} onChange={(e) => set({ transcriptOverride: e.target.value })} rows={8} className="input h-auto w-full resize-y bg-white py-2 font-deva leading-relaxed" />
+            <textarea value={s.transcriptOverride ?? ""} onChange={(e) => set({ transcriptOverride: e.target.value })} rows={14} className="input h-auto w-full resize-y bg-white py-2 font-deva text-[17px] leading-relaxed" />
           ) : s.transcriptOverride != null ? (
-            <p className="whitespace-pre-wrap font-deva leading-relaxed text-stone-800">{s.transcriptOverride}</p>
+            <p className="whitespace-pre-wrap font-deva text-[17px] leading-relaxed text-stone-800">{s.transcriptOverride}</p>
           ) : words ? (
             <>
-              <StoryTranscript words={words} start={s.start} end={s.end} time={media.time} rohit={rohit} onSeek={(t) => media.seek(t, true)} />
-              <p className="mt-3 text-[11px] text-stone-400">Faded text is just outside the story. Click any word to jump there, then use “Set to playhead”.</p>
+              <StoryTranscript words={words} start={s.start} end={s.end} time={media.time} rohit={rohit} onSeek={(t) => media.seek(t, true)} marking={marking} onMark={mark} />
+              <p className={cx("mt-3 text-[11px]", marking ? MARK_COLORS[marking].text : "text-stone-400")}>
+                {marking
+                  ? `Click the ${marking === "start" ? "first" : "last"} word of the story. Esc to cancel.`
+                  : "Faded text is just outside the story. Click any word to play from there, or use Mark start / Mark end and then click a word."}
+              </p>
             </>
           ) : (
             <p className="text-stone-400">No transcript yet — run the AI on this class to get one.</p>
@@ -249,6 +296,38 @@ function Editor({ s, dirty, words, rohit, media, saving, set, onSave, onDiscard,
         </div>
       </section>
     </div>
+  );
+}
+
+/** how far through the story playback is; click to jump within the story (it still stops at the story's end) */
+function StoryProgress({ start, end, media }: { start: number; end: number; media: Media }) {
+  const bar = useRef<HTMLDivElement>(null);
+  const length = end - start;
+  const elapsed = Math.min(length, Math.max(0, media.time - start));
+  const jump = (e: React.MouseEvent) => {
+    const r = bar.current!.getBoundingClientRect();
+    media.playRange(start + Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)) * length, end);
+  };
+  return (
+    <div className="flex items-center gap-2 px-3 pb-2.5 text-[11px] tabular-nums text-stone-500">
+      <span className="w-10 text-right">{fmtTime(elapsed)}</span>
+      <div ref={bar} onClick={jump} title="Jump within the story" className="group relative flex h-4 flex-1 cursor-pointer items-center">
+        <div className="h-1.5 w-full overflow-hidden rounded-full bg-stone-200 transition-[height] group-hover:h-2">
+          <div className="h-full rounded-full bg-orange-500" style={{ width: `${(elapsed / length) * 100}%` }} />
+        </div>
+      </div>
+      <span className="w-10">−{fmtTime(length - elapsed)}</span>
+    </div>
+  );
+}
+
+function Disclosure({ open, onToggle, label, preview }: { open: boolean; onToggle: () => void; label: string; preview: string }) {
+  return (
+    <button type="button" onClick={onToggle} aria-expanded={open} className="flex w-full min-w-0 items-center gap-1.5 text-left text-xs text-stone-500 hover:text-stone-900">
+      <ChevronRight className={cx("h-3.5 w-3.5 shrink-0 transition-transform", open && "rotate-90")} />
+      <span className="shrink-0 font-medium">{label}</span>
+      {!open && <span className="min-w-0 truncate text-stone-400">{preview}</span>}
+    </button>
   );
 }
 
